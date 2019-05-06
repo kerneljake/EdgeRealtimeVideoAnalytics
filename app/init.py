@@ -6,6 +6,7 @@ from urllib.parse import urlparse
 if __name__ == '__main__':
     # Parse arguments
     parser = argparse.ArgumentParser()
+    parser.add_argument('-d', '--device', help='CPU or GPU', type=str, default='CPU')
     parser.add_argument('-i', '--camera_id', help='Input video stream key camera ID', type=str, default='0')
     parser.add_argument('-p', '--camera_prefix', help='Input video stream key prefix', type=str, default='camera')
     parser.add_argument('-u', '--url', help='RedisEdge URL', type=str, default='redis://127.0.0.1:6379')
@@ -29,9 +30,16 @@ if __name__ == '__main__':
 
     # Load the RedisAI model
     print('Loading model - ', end='')
-    with open('models/yolo_full_with_pipeline.pb', 'rb') as f:
+    with open('models/tiny-yolo-voc.pb', 'rb') as f:
         model = f.read()
-        res = conn.execute_command('AI.MODELSET', 'yolo:model', 'TF', 'GPU', 'INPUTS', 'input_1', 'input_image_shape', 'OUTPUTS', 'concat_13', 'concat_12', 'concat_11', model)
+        res = conn.execute_command('AI.MODELSET', 'yolo:model', 'TF', args.device, 'INPUTS', 'input', 'OUTPUTS', 'output', model)
+        print(res)
+
+    # Load the PyTorch post processing boxes script
+    print('Loading script - ', end='')
+    with open('yolo_boxes.py', 'rb') as f:
+        script = f.read()
+        res = conn.execute_command('AI.SCRIPTSET', 'yolo:script', args.device, script)
         print(res)
 
     print('Creating timeseries keys and downsampling rules - ', end='')

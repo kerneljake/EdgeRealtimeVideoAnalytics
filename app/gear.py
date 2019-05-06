@@ -4,13 +4,15 @@ import redisAI
 import numpy as np
 from PIL import Image
 from PIL import ImageDraw
-
 # Configuration
-FPS = 4.0           # Maximum number of frames per second to process TODO: move to config key
+FPS = 10.0          # Maximum number of frames per second to process TODO: move to config key
 
 # Globals for downsampling
 _mspf = 1000 / FPS  # Msecs per frame
 _next_ts = 0        # Next timestamp to sample
+
+def log(s):
+    execute('DEBUG', 'LOG', s)
 
 def downsampleStream(x):
     ''' Drops input frames to match FPS '''
@@ -41,7 +43,7 @@ def process_image(img, height):
 
 def runYolo(x):
     ''' Runs the model on an input image using RedisAI '''
-    IMG_SIZE = 736                      # Model's input size
+    IMG_SIZE = 416     # Model's input image size
 
     # Read the image from the stream's message
     buf = io.BytesIO(x['image'])
@@ -49,46 +51,49 @@ def runYolo(x):
     numpy_img = np.array(pil_image)
     image = process_image(numpy_img, IMG_SIZE)
 
-    # Prepare the image and shape tensors as model inputs
-    image_tensor = redisAI.createTensorFromBlob('FLOAT', [1,IMG_SIZE,IMG_SIZE,3], image.tobytes())
-    shape_tensor = redisAI.createTensorFromValues('FLOAT', [2], [IMG_SIZE,IMG_SIZE])
+    # Prepare the image tensor as model's input (number of tensors, width, height, channels)
+    image_tensor = redisAI.createTensorFromBlob('FLOAT', [1, IMG_SIZE, IMG_SIZE, 3], image.tobytes())
 
     # Create yolo's RedisAI model runner and run it
     modelRunner = redisAI.createModelRunner('yolo:model')
-    redisAI.modelRunnerAddInput(modelRunner, 'input_1', image_tensor)
-    redisAI.modelRunnerAddInput(modelRunner, 'input_image_shape', shape_tensor)
-    redisAI.modelRunnerAddOutput(modelRunner, 'concat_13')
-    redisAI.modelRunnerAddOutput(modelRunner, 'concat_12')
-    redisAI.modelRunnerAddOutput(modelRunner, 'concat_11')
-    model_reply = redisAI.modelRunnerRun(modelRunner)
+    redisAI.modelRunnerAddInput(modelRunner, 'input', image_tensor)
+    redisAI.modelRunnerAddOutput(modelRunner, 'output')
+    model_replies = redisAI.modelRunnerRun(modelRunner)
+    model_output = model_replies[0]
 
-    # Get the model's outputs
-    classes_tensor = model_reply[0]
-    shape = redisAI.tensorGetDims(classes_tensor)
-    buf = redisAI.tensorGetDataAsBlob(classes_tensor)
-    classes = np.frombuffer(buf, dtype=np.float32).reshape(shape)
-    boxes_tensor = model_reply[2]
-    shape = redisAI.tensorGetDims(boxes_tensor)
-    buf = redisAI.tensorGetDataAsBlob(boxes_tensor)
+    # The model's output is processed with a PyTorch script for non maxima suppression
+    scriptRunner = redisAI.createScriptRunner('yolo:script', 'boxes_from_tf')
+    redisAI.scriptRunnerAddInput(scriptRunner, 'input', model_output)
+    redisAI.scriptRunnerAddOutput(scriptRunner, 'output')
+    script_reply = redisAI.scriptRunnerRun(scriptRunner)
+
+    # The script's outputs bounding boxes that are serialized
+    shape = redisAI.tensorGetDims(script_reply)
+    buf = redisAI.tensorGetDataAsBlob(script_reply)
     boxes = np.frombuffer(buf, dtype=np.float32).reshape(shape)
 
-    # Extract the people boxes
-    boxes_out = []
-    people_count = 0
+    # # Extract the people boxes
     ratio = float(IMG_SIZE) / max(pil_image.width, pil_image.height)  # ratio = old / new
     pad_x = (IMG_SIZE - pil_image.width * ratio) / 2                  # Width padding
     pad_y = (IMG_SIZE - pil_image.height * ratio) / 2                 # Height padding
-    for ind, class_val in enumerate(classes):
-        if class_val == 0:  # 0 is people
-            people_count += 1
-            # Descale coordinates back to original image size
-            top, left, bottom, right = boxes[ind]
-            x1 = (left - pad_x) / ratio
-            x2 = (right - pad_x) / ratio
-            y1 = (top - pad_y) / ratio
-            y2 = (bottom - pad_y) / ratio
-            # Store boxes as a flat list
-            boxes_out += [x1,y1,x2,y2]
+    boxes_out = []
+    people_count = 0
+    for box in boxes[0]:
+        if box[4] == 0.0:  # Remove zero-confidence detections
+            continue
+        if box[-1] != 14:  # Ignore detections that aren't people
+            continue
+        people_count += 1
+
+        # Descale bounding box coordinates back to original image size
+        x1 = (IMG_SIZE * (box[0] - 0.5 * box[2]) - pad_x) / ratio
+        y1 = (IMG_SIZE * (box[1] - 0.5 * box[3]) - pad_y) / ratio
+        x2 = (IMG_SIZE * (box[0] + 0.5 * box[2]) - pad_x) / ratio
+        y2 = (IMG_SIZE * (box[1] + 0.5 * box[3]) - pad_y) / ratio
+
+        # Store boxes as a flat list
+        boxes_out += [x1,y1,x2,y2]
+
     return x['streamId'], people_count, boxes_out
 
 def storeResults(x):

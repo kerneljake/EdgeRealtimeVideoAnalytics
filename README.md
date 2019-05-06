@@ -25,7 +25,7 @@ The following diagram depicts the system's parts.
 
 The RedisEdge stack consists of a the latest Redis release and select RedisLabs modules inteded to be used in Edge computing. For more information refer to [RedisEdge](https://github.com/RedisLabs/redis-edge-docker).
 
-### YOLOv3
+### YOLO
 
 TBD
 
@@ -96,6 +96,11 @@ Note that you can choose which containers to spin. For example, the following wi
 ```sh
 $ docker-compose up redisedge prometheus grafana prometheus-redistimeseries-adapter
 ```
+
+### OSX, Docker and Webcams
+
+According to current wisdom, it is possible to use the webcam from a Docker container on OSX. To workaround that,
+run the `capture.py` on the host itself.
 
 ## UI
 
