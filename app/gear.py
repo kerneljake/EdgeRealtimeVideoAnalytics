@@ -2,16 +2,87 @@
 import cv2
 import redisAI
 import numpy as np
+from time import time
 from PIL import Image
 from PIL import ImageDraw
-# Configuration
-FPS = 10.0          # Maximum number of frames per second to process TODO: move to config key
 
 # Globals for downsampling
-_mspf = 1000 / FPS  # Msecs per frame
-_next_ts = 0        # Next timestamp to sample
+_mspf = 1000 / 10.0      # Msecs per frame (initial)
+_next_ts = 0             # Next timestamp to sample a frame
+
+class SimpleMovingAverage(object):
+    ''' Simple moving average '''
+    def __init__(self, value=0.0, count=7):
+        '''
+        @value - the initialization value
+        @count - the count of samples to keep
+        '''
+        self.count = int(count)
+        self.current = float(value)
+        self.samples = [self.current] * self.count
+
+    def __str__(self):
+        return str(round(self.current, 3))
+
+    def add(self, value):
+        ''' Adds the next value to the average '''
+        v = float(value)
+        self.samples.insert(0, v)
+        o = self.samples.pop()
+        self.current = self.current + (v-o)/self.count
+
+class Profiler(object):
+    ''' Mini profiler '''
+    names = []  # Steps names in order
+    data = {}   # ... and data
+    last = None
+    def __init__(self):
+        pass
+
+    def __str__(self):
+        s = ''
+        for name in self.names:
+            s = '{}{}:{}, '.format(s, name, self.data[name])
+        return(s[:-2])
+
+    def __delta(self):
+        ''' Returns the time delta between invocations '''
+        now = time()*1000       # Transform to milliseconds
+        if self.last is None:
+            self.last = now
+        value = now - self.last
+        self.last = now
+        return value
+
+    def start(self):
+        ''' Starts the profiler '''
+        self.last = time()*1000
+
+    def add(self, name):
+        ''' Adds/updates a step's duration '''
+        value = self.__delta()
+        if name not in self.data:
+            self.names.append(name)
+            self.data[name] = SimpleMovingAverage(value=value)
+        else:
+            self.data[name].add(value)
+
+    def assign(self, name, value):
+        ''' Assigns a step with a value '''
+        if name not in self.data:
+            self.names.append(name)
+            self.data[name] = SimpleMovingAverage(value=value)
+        else:
+            self.data[name].add(value)
+
+    def get(self, name):
+        ''' Gets a step's value '''
+        return self.data[name].current
+
+prf = Profiler()
 
 def log(s):
+    ''' Print something to Redis' log '''
     execute('DEBUG', 'LOG', s)
 
 def downsampleStream(x):
@@ -43,13 +114,17 @@ def process_image(img, height):
 
 def runYolo(x):
     ''' Runs the model on an input image using RedisAI '''
+    global prf
     IMG_SIZE = 416     # Model's input image size
-
+    prf.start()
     # Read the image from the stream's message
     buf = io.BytesIO(x['image'])
     pil_image = Image.open(buf)
     numpy_img = np.array(pil_image)
+    prf.add('read')
+
     image = process_image(numpy_img, IMG_SIZE)
+    prf.add('resize')
 
     # Prepare the image tensor as model's input (number of tensors, width, height, channels)
     image_tensor = redisAI.createTensorFromBlob('FLOAT', [1, IMG_SIZE, IMG_SIZE, 3], image.tobytes())
@@ -60,19 +135,21 @@ def runYolo(x):
     redisAI.modelRunnerAddOutput(modelRunner, 'output')
     model_replies = redisAI.modelRunnerRun(modelRunner)
     model_output = model_replies[0]
+    prf.add('model')
 
     # The model's output is processed with a PyTorch script for non maxima suppression
     scriptRunner = redisAI.createScriptRunner('yolo:script', 'boxes_from_tf')
     redisAI.scriptRunnerAddInput(scriptRunner, 'input', model_output)
     redisAI.scriptRunnerAddOutput(scriptRunner, 'output')
     script_reply = redisAI.scriptRunnerRun(scriptRunner)
+    prf.add('script')
 
     # The script's outputs bounding boxes that are serialized
     shape = redisAI.tensorGetDims(script_reply)
     buf = redisAI.tensorGetDataAsBlob(script_reply)
     boxes = np.frombuffer(buf, dtype=np.float32).reshape(shape)
 
-    # # Extract the people boxes
+    # Extract the people boxes
     ratio = float(IMG_SIZE) / max(pil_image.width, pil_image.height)  # ratio = old / new
     pad_x = (IMG_SIZE - pil_image.width * ratio) / 2                  # Width padding
     pad_y = (IMG_SIZE - pil_image.height * ratio) / 2                 # Height padding
@@ -93,11 +170,13 @@ def runYolo(x):
 
         # Store boxes as a flat list
         boxes_out += [x1,y1,x2,y2]
+    prf.add('boxes')
 
     return x['streamId'], people_count, boxes_out
 
 def storeResults(x):
     ''' Stores the results in Redis Stream and TimeSeries data structures '''
+    global _mspf, prf
     ref_id, people, boxes= x[0], int(x[1]), x[2]
     ref_msec = int(str(ref_id).split('-')[0])
 
@@ -106,9 +185,22 @@ def storeResults(x):
 
     # Add a sample to the output people and fps timeseries
     res_msec = int(str(res_id).split('-')[0])
-    execute('TS.ADD', 'camera:0:people', ref_msec/1000, people)
+    ts = ref_msec/1000
+    execute('TS.ADD', 'camera:0:people', ts, people)
     execute('TS.INCRBY', 'camera:0:out_fps', 1, 'RESET', 1)
 
+    # Adjust mspf to the moving average duration
+    total_duration = res_msec - ref_msec
+    prf.assign('total', total_duration)
+    avg_duration = prf.get('total')
+    _mspf = avg_duration * 1.05  # A little extra leg room
+
+    # Record profiler steps
+    for name in prf.names:
+        current = prf.data[name].current
+        execute('TS.ADD', 'camera:0:prf_{}'.format(name), ts, current)
+
+    prf.add('store')
     # Make an arithmophilial homage to Count von Count for storage in the execution log
     if people == 0:
         return 'Now there are none.'

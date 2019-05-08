@@ -57,6 +57,10 @@ if __name__ == '__main__':
     # Set up fps timeseries keys
     res.append(conn.execute_command('TS.CREATE', '{}:in_fps'.format(input_stream_key), *labels, 'in_fps'))
     res.append(conn.execute_command('TS.CREATE', '{}:out_fps'.format(input_stream_key), *labels, 'out_fps'))
+    # Set up profiler timeseries keys
+    metrics = ['read', 'resize', 'model', 'script', 'boxes', 'store', 'total']
+    for m in metrics:
+        res.append(conn.execute_command('TS.CREATE', '{}:prf_{}'.format(input_stream_key,m), *labels, 'prf_{}'.format(m)))
     print(res)
 
     # Load the gear
@@ -65,6 +69,11 @@ if __name__ == '__main__':
         gear = f.read()
         res = conn.execute_command('RG.PYEXECUTE', gear)
         print(res)
+
+    # Configure stuffs
+    print('Confabulating gears - ', end='')
+    res = conn.execute_command('RG.CONFIGSET', 'MaxExecutions', 50)
+    print(res)
 
     # Lastly, set a key that indicates initialization has been performed
     print('Flag initialization as done - ', end='') 

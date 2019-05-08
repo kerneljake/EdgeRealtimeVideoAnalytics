@@ -117,7 +117,5 @@ def boxes_from_tf(output):
     boxes = get_region_boxes(output.permute(0, 3, 1, 2).contiguous())
     boxes = nms(boxes)
 
-    # TODO: remove zero confidence boxes and resize boxes tensor
-
     return boxes
 
