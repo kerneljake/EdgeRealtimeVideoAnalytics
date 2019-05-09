@@ -43,7 +43,7 @@ $ git lfs install; git lfs checkout
 
 ## How to run it locally
 
-### The RedisEdge stack
+### Installing the RedisEdge stack
 
 Refer to the build/installation instructions of the following projects to set up a Redis server with the relevant Redis modules. This application's connections default to `redis://localhost:6379`.
 
@@ -52,7 +52,16 @@ Refer to the build/installation instructions of the following projects to set up
 * [RedisTimeSeries](https://oss.redislabs.com/redistimeseries/)
 * [RedisAI](https://oss.redislabs.com/redisai/)
 
-Note that you'll also need to install the Pythonic [`requirements.txt`](/redisedge/requirements.txt) for the embedded RedisGears Python interpreter.
+Note that you'll also need to install the Pythonic [`requirements.txt`](/redisedge/requirements.txt) for the embedded RedisGears Python interpreter. Here's how:
+1. Verify that your host has OpenCV for Python2.7 - if not, install it (`apt-get install python-opencv`)
+  1. From your host's command line run the Python 2 interpreter with `python2`
+  2. Type `import cv2` - if this succeeds then OpenCV is installed
+  3. Type `cv2.__file__` - you should get something like '/usr/lib/python2.7/dist-packages/cv2.x86_64-linux-gnu.so'
+  4. Exit the python interpreter (CTRL-D)
+2. Go to `/opt/redislabs/lib/modules/python27/.venv/lib/python2.7/site-packages`
+3. Create a soft link like so: `ln -s /usr/lib/python2.7/dist-packages/cv2.x86_64-linux-gnu.so cv2.so`
+4. Go to `/opt/redislabs/lib/modules/python27`
+5. Install the rest of the requirements with `pipenv install numpy pillow`
 
 ### (optional) Prometheus and Grafana
 
@@ -61,6 +70,8 @@ Refer to the build/installation instructions of the following projects to set up
 * Prometheus: [Installation](https://prometheus.io/), [config sample](/prometheus/config.yml)
 * Grafana: [Installation](https://grafana.com/), [config sample](/grafana/config.ini), [datasource sample](/grafana/provisioning/datasources/prometheus.yaml), [dashboard samples](/grafana/dashboards/)
 * [prometheus-redistimeseries-adapter](https://github.com/RedisTimeSeries/prometheus-redistimeseries-adapter)
+
+See below on how to run a partially-dockerized setup that circumvents the need to install these locally.
 
 ## The application
 
@@ -77,8 +88,7 @@ To run the application you'll need Python v3.6 or higher. Install the applicatio
 ```sh
 $ virtualenv -p python3.6 venv
 $ source venv/bin/activate
-$ cd app
-$ pip install -r requirements.txt
+$ pip install -r app/requirements.txt
 ```
 
 The application's parts are set up with default values that are intended to allow it to run "out of the box". For example, to run the capture process you only need to type:
@@ -143,12 +153,23 @@ According to current wisdom, it is impossible to use the webcam from a Docker co
 
 According to current wisdom, 'host' mode networking is a myth on macOS. Hence, the partially-dockerized mode is not available. TL;DR - it is either (almost) fully-dockerized or local for you.
 
-## Performance notes
+## Performance metrics and notes
 
 1. Docker makes everything slower.
 2. The bigger your captured video, the slower this would run.
 3. If you don't have a GPU but your CPU supports additional optimizations, consider compiling TensorFlow with them (and then RedisAI) and running RedisEdge locally.
 4. If you have a GPU, use it (i.e. compile RedisAI for it and `python init.py --device GPU`)
+
+Both the [top tool](/app/top.py) and the [Grafana UI](#UI) provide the following performance metrics:
+* in_fps: input (video) frames per second
+* out_fps: output (processed by model) frames per second
+* prf_read: a moving average of the duration of read (from input video stream) phase in msec
+* prf_resize: ditto for resize (input frame to model tensor)
+* prf_model: ditto for running YOLO model
+* prf_script: ditto for running PyTorch post script
+* prf_boxes: ditto for extracting the people boxes from the script's output
+* prf_store: ditto for storing the results and the various timeseries values]
+* prf_total: end-to-end latency in msec for a processed frame
 
 ### Unofficial metrics
 
@@ -160,6 +181,10 @@ Metrics sampled by capturing the [Count's video](/app/data/countvoncount.mp4) us
 * macOS, dockerized: TBD msec
 * Ubuntu 18.04, dockerized/local: out: ~4.5 fps, ~190 msec
 * Ubuntu 18.04, local with CPU optimizations - out: ~8 fps, total: ~110 msec
+
+#### AWS EC2 TBD
+
+* TBD, GPU: TBD
 
 ## UI
 
